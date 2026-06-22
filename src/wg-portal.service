@@ -1,0 +1,30 @@
+[Unit]
+Description=WireGuard client portal (localhost; fronted by nginx)
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wgportal
+Group=wgportal
+ExecStart=/usr/bin/python3 /opt/wg-portal/portal.py
+Environment=PORTAL_BIND=127.0.0.1
+Environment=PORTAL_PORT=8080
+Environment=PORTAL_TOKEN_FILE=/etc/wg-portal/proxy-token
+Restart=on-failure
+RestartSec=2
+
+# Hardening. NoNewPrivileges is intentionally NOT set: the app must sudo the
+# helper. The real isolation is the unprivileged user + the narrow sudoers rule.
+# ProtectSystem=full makes /etc read-only for this unit AND its children, so the
+# sudo'd wg-manage must be granted write access to /etc/wireguard explicitly —
+# without ReadWritePaths, adding/removing clients via the portal would fail.
+ProtectSystem=full
+ReadWritePaths=/etc/wireguard
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+
+[Install]
+WantedBy=multi-user.target

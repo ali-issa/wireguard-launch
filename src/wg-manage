@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# wg-manage — manage WireGuard clients on this server.
+#
+#   wg-manage add <name>        create a client, print its config + QR code
+#   wg-manage remove <name>     revoke a client (live + on disk), free its IP
+#   wg-manage list              list clients with IP / created / last handshake
+#   wg-manage show <name>       print a client's .conf to stdout
+#   wg-manage qr <name>         print a client's QR code to the terminal
+#   wg-manage rebuild-conf      regenerate wg0.conf from keys + clients/
+#
+# The clients/ directory is the source of truth. Live changes are applied with
+# `wg set` (non-disruptive — existing peers stay connected) and persisted by
+# regenerating the interface config from clients/.
+#
+set -euo pipefail
+
+CONF_FILE="/etc/wireguard/wg-manage.conf"
+[ -r "$CONF_FILE" ] || { echo "wg-manage: missing $CONF_FILE" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$CONF_FILE"
+
+WG_DIR="/etc/wireguard"
+CLIENTS_DIR="${WG_DIR}/clients"
+LOCK_FILE="${WG_DIR}/.lock"
+SERVER_PRIV_FILE="${WG_DIR}/server_private.key"
+SERVER_PUB_FILE="${WG_DIR}/server_public.key"
+
+umask 077
+
+die() { echo "wg-manage: $*" >&2; exit 1; }
+require_root() { [ "$(id -u)" -eq 0 ] || die "must be run as root"; }
+valid_name() { [[ "${1:-}" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; }
+iface_up() { wg show "$WG_INTERFACE" >/dev/null 2>&1; }
+
+lock() { exec 9>"$LOCK_FILE"; flock 9; }
+
+detect_public_ip() {
+  local ip="" tok
+  tok="$(curl -fsS -m 2 -X PUT 'http://169.254.169.254/latest/api/token' \
+        -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null || true)"
+  [ -n "$tok" ] && ip="$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $tok" \
+        'http://169.254.169.254/latest/meta-data/public-ipv4' 2>/dev/null || true)"
+  [ -z "$ip" ] && ip="$(curl -fsS -m 2 'http://169.254.169.254/latest/meta-data/public-ipv4' 2>/dev/null || true)"
+  [ -z "$ip" ] && ip="$(curl -fsS -m 4 https://api.ipify.org 2>/dev/null || true)"
+  [ -z "$ip" ] && ip="$(curl -fsS -m 4 https://ifconfig.me/ip 2>/dev/null || true)"
+  printf '%s' "$ip"
+}
+
+endpoint_host() {
+  if [ "${WG_ENDPOINT_HOST:-auto}" = "auto" ]; then
+    local ip; ip="$(detect_public_ip)"
+    [ -n "$ip" ] || die "could not auto-detect public IP — set WG_ENDPOINT_HOST in $CONF_FILE"
+    printf '%s' "$ip"
+  else
+    printf '%s' "$WG_ENDPOINT_HOST"
+  fi
+}
+
+# Lowest free host address in the /24 (.2 .. .254), reusing addresses freed by
+# removals. .1 is the server.
+next_ip() {
+  declare -A taken
+  taken[1]=1
+  local ipf cip octet
+  for ipf in "${CLIENTS_DIR}"/*/ip; do
+    [ -e "$ipf" ] || continue
+    cip="$(cat "$ipf")"; octet="${cip##*.}"
+    [ -n "$octet" ] && taken["$octet"]=1
+  done
+  for octet in $(seq 2 254); do
+    [ -z "${taken[$octet]:-}" ] && { printf '%s.%s' "$WG_SUBNET" "$octet"; return 0; }
+  done
+  die "no free addresses left in ${WG_SUBNET}.0/24"
+}
+
+# Regenerate the server interface config from the keys + every client dir.
+rebuild_conf() {
+  require_root
+  [ -s "$SERVER_PRIV_FILE" ] || die "missing server private key"
+  local tmp; tmp="$(mktemp "${WG_DIR}/.${WG_INTERFACE}.conf.XXXXXX")"
+  {
+    echo "# Managed by wg-manage. Do not edit peers by hand — use 'wg-manage add/remove'."
+    echo "[Interface]"
+    echo "Address = ${WG_SERVER_IP}/24"
+    echo "ListenPort = ${WG_LISTEN_PORT}"
+    echo "PrivateKey = $(cat "$SERVER_PRIV_FILE")"
+    echo "PostUp = ${WG_DIR}/wg-nat.sh up %i"
+    echo "PostDown = ${WG_DIR}/wg-nat.sh down %i"
+    local d name
+    for d in "${CLIENTS_DIR}"/*/; do
+      [ -e "${d}publickey" ] || continue
+      name="$(basename "$d")"
+      echo
+      echo "[Peer]"
+      echo "# ${name}"
+      echo "PublicKey = $(cat "${d}publickey")"
+      echo "AllowedIPs = $(cat "${d}ip")/32"
+    done
+  } > "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "${WG_DIR}/${WG_INTERFACE}.conf"
+}
+
+cmd_add() {
+  require_root
+  local name="${1:-}"
+  valid_name "$name" || die "invalid name (allowed: A-Za-z0-9_- , 1-32 chars)"
+  lock
+  local cdir="${CLIENTS_DIR}/${name}"
+  [ -d "$cdir" ] && die "client '${name}' already exists"
+
+  local ip priv pub eph
+  ip="$(next_ip)"
+  priv="$(wg genkey)"
+  pub="$(printf '%s' "$priv" | wg pubkey)"
+  eph="$(endpoint_host)"
+
+  mkdir -p "$cdir"
+  printf '%s\n' "$priv" > "${cdir}/privatekey"
+  printf '%s\n' "$pub"  > "${cdir}/publickey"
+  printf '%s\n' "$ip"   > "${cdir}/ip"
+  date -u +%FT%TZ 2>/dev/null > "${cdir}/created" || echo unknown > "${cdir}/created"
+
+  cat > "${cdir}/${name}.conf" <<CFG
+[Interface]
+PrivateKey = ${priv}
+Address = ${ip}/24
+DNS = ${WG_DNS}
+
+[Peer]
+PublicKey = $(cat "$SERVER_PUB_FILE")
+Endpoint = ${eph}:${WG_LISTEN_PORT}
+AllowedIPs = ${WG_ALLOWED_IPS}
+PersistentKeepalive = ${WG_KEEPALIVE}
+CFG
+  chmod 600 "${cdir}"/*
+
+  # Apply to the running interface without disconnecting existing peers.
+  if iface_up; then
+    wg set "$WG_INTERFACE" peer "$pub" allowed-ips "${ip}/32"
+  fi
+  rebuild_conf
+
+  echo "Created client '${name}' (assigned ${ip})."
+  echo "Config: ${cdir}/${name}.conf"
+  if command -v qrencode >/dev/null 2>&1; then
+    echo
+    echo "Scan this in the WireGuard mobile app:"
+    qrencode -t ansiutf8 < "${cdir}/${name}.conf" || true
+  fi
+}
+
+cmd_remove() {
+  require_root
+  local name="${1:-}"
+  valid_name "$name" || die "invalid name"
+  lock
+  local cdir="${CLIENTS_DIR}/${name}"
+  [ -d "$cdir" ] || die "no such client '${name}'"
+  local pub; pub="$(cat "${cdir}/publickey" 2>/dev/null || true)"
+  if [ -n "$pub" ] && iface_up; then
+    wg set "$WG_INTERFACE" peer "$pub" remove || true
+  fi
+  rm -rf "$cdir"
+  rebuild_conf
+  echo "Removed client '${name}'."
+}
+
+cmd_list() {
+  printf '%-22s %-13s %-22s\n' NAME IP CREATED
+  local d
+  for d in "${CLIENTS_DIR}"/*/; do
+    [ -e "${d}ip" ] || continue
+    printf '%-22s %-13s %-22s\n' \
+      "$(basename "$d")" "$(cat "${d}ip")" "$(cat "${d}created" 2>/dev/null || echo -)"
+  done
+}
+
+# Machine-readable: one tab-separated line per client: name, ip, created, pubkey.
+cmd_clients() {
+  local d
+  for d in "${CLIENTS_DIR}"/*/; do
+    [ -e "${d}ip" ] || continue
+    printf '%s\t%s\t%s\t%s\n' \
+      "$(basename "$d")" "$(cat "${d}ip")" \
+      "$(cat "${d}created" 2>/dev/null || echo -)" "$(cat "${d}publickey")"
+  done
+}
+
+cmd_show() {
+  local name="${1:-}"; valid_name "$name" || die "invalid name"
+  local f="${CLIENTS_DIR}/${name}/${name}.conf"
+  [ -r "$f" ] || die "no such client '${name}'"
+  cat "$f"
+}
+
+cmd_qr() {
+  local name="${1:-}"; valid_name "$name" || die "invalid name"
+  local f="${CLIENTS_DIR}/${name}/${name}.conf"
+  [ -r "$f" ] || die "no such client '${name}'"
+  command -v qrencode >/dev/null 2>&1 || die "qrencode is not installed"
+  qrencode -t ansiutf8 < "$f"
+}
+
+cmd_qrpng() {
+  local name="${1:-}"; valid_name "$name" || die "invalid name"
+  local f="${CLIENTS_DIR}/${name}/${name}.conf"
+  [ -r "$f" ] || die "no such client '${name}'"
+  command -v qrencode >/dev/null 2>&1 || die "qrencode is not installed"
+  qrencode -t png -o - < "$f"
+}
+
+cmd_wgdump() { wg show "$WG_INTERFACE" dump; }
+
+usage() {
+  cat >&2 <<USG
+Usage: wg-manage <command> [name]
+  add <name>        create a client and print its config + QR
+  remove <name>     revoke a client
+  list              list clients
+  show <name>       print a client's .conf
+  qr <name>         print a client's QR code
+  rebuild-conf      regenerate ${WG_INTERFACE}.conf from clients/
+USG
+  exit 1
+}
+
+case "${1:-}" in
+  add)              shift; cmd_add "${1:-}";;
+  remove|rm|delete) shift; cmd_remove "${1:-}";;
+  list|ls)          cmd_list;;
+  clients)          cmd_clients;;
+  show|config)      shift; cmd_show "${1:-}";;
+  qr)               shift; cmd_qr "${1:-}";;
+  qrpng)            shift; cmd_qrpng "${1:-}";;
+  wgdump)           cmd_wgdump;;
+  rebuild-conf)     rebuild_conf;;
+  ""|-h|--help|help) usage;;
+  *)                die "unknown command '${1}' (try: wg-manage help)";;
+esac

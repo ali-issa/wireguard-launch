@@ -1,0 +1,15 @@
+# Python bytecode (from local compile/test runs)
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local test scratch
+*.decoded

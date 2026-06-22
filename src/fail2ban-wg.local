@@ -1,0 +1,10 @@
+# Ban brute-force attempts against SSH and the portal's basic auth.
+[sshd]
+enabled = true
+
+[nginx-http-auth]
+enabled  = true
+port     = http,https
+logpath  = /var/log/nginx/error.log
+maxretry = 5
+bantime  = 1h

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# wg-portal-helper — the ONLY command the unprivileged portal user may run as
+# root (via a narrow sudoers rule). It whitelists verbs, re-validates the client
+# name, then delegates to wg-manage. This is the entire privilege boundary
+# between the web app and /etc/wireguard, so keep it strict.
+#
+set -euo pipefail
+
+verb="${1:-}"
+name="${2:-}"
+
+case "$verb" in
+  add|remove|getconf|qrpng)
+    [[ "$name" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "invalid name" >&2; exit 2; }
+    ;;
+  clients|wgdump)
+    ;;
+  *)
+    echo "forbidden verb" >&2; exit 2
+    ;;
+esac
+
+case "$verb" in
+  add)     exec /usr/local/sbin/wg-manage add "$name" ;;
+  remove)  exec /usr/local/sbin/wg-manage remove "$name" ;;
+  getconf) exec /usr/local/sbin/wg-manage show "$name" ;;
+  qrpng)   exec /usr/local/sbin/wg-manage qrpng "$name" ;;
+  clients) exec /usr/local/sbin/wg-manage clients ;;
+  wgdump)  exec /usr/local/sbin/wg-manage wgdump ;;
+esac
