@@ -13,3 +13,6 @@ __pycache__/
 
 # Local test scratch
 *.decoded
+
+# Claude Code harness / session artifacts
+.claude/
