@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 TMPL="src/install.sh.tmpl"
-OUT="lightsail-launch.sh"
+OUT="${OUT:-lightsail-launch.sh}"   # overridable so tests can build to a temp file
 MARKER="#__EMBEDS__"
 
 # emit_block <srcfile> <destpath> <mode>
@@ -18,8 +18,10 @@ emit_block() {
   tag="B64_$(printf '%s' "$dest" | tr -c 'A-Za-z0-9' '_')"
   printf 'mkdir -p "$(dirname %s)"\n' "$dest"
   printf 'base64 -d > "%s" <<'\''%s'\''\n' "$dest" "$tag"
-  base64 < "$src"
-  printf '%s\n' "$tag"
+  # Normalise to fixed 76-col lines so the build is byte-identical regardless of
+  # platform (macOS BSD base64 emits one long line; Linux GNU base64 wraps at 76).
+  base64 < "$src" | tr -d '\n' | fold -w 76
+  printf '\n%s\n' "$tag"
   printf 'chmod %s "%s"\n\n' "$mode" "$dest"
 }
 
