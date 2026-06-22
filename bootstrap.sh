@@ -13,9 +13,9 @@
 #
 set -euo pipefail
 
-# ---- EDIT THIS ----
-SCRIPT_URL="https://raw.githubusercontent.com/USER/REPO/main/lightsail-launch.sh"
-# -------------------
+# ---- points at this repo's published script; change if you fork ----
+SCRIPT_URL="https://raw.githubusercontent.com/ali-issa/wireguard-launch/main/lightsail-launch.sh"
+# --------------------------------------------------------------------
 
 # Optional: override installer defaults (these pass through to lightsail-launch.sh)
 # export ENABLE_PORTAL=true
