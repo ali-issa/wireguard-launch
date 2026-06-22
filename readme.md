@@ -1,5 +1,8 @@
 # wireguard-launch
 
+[![ci](https://github.com/ali-issa/wireguard-launch/actions/workflows/ci.yml/badge.svg)](https://github.com/ali-issa/wireguard-launch/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A turnkey, self-contained **launch script** that turns a fresh Debian box
 (AWS Lightsail, EC2, or any VPS) into a hardened WireGuard VPN server — with a
 client-management CLI and an optional web portal for generating, downloading,
@@ -213,6 +216,18 @@ Lightsail firewall and manage clients via the CLI over SSH.)
 
 ---
 
+## Uninstall
+
+Remove everything the script installed — services, the portal, and **all** client
+configs/keys (apt packages are left in place):
+
+```bash
+scp uninstall.sh admin@<INSTANCE_IP>:/tmp/
+ssh admin@<INSTANCE_IP> 'sudo bash /tmp/uninstall.sh'   # add --yes to skip the prompt
+```
+
+---
+
 ## Troubleshooting
 
 - **Can't connect from a client.** Confirm UDP `51820` is open in the *Lightsail*
@@ -231,11 +246,15 @@ Lightsail firewall and manage clients via the CLI over SSH.)
 ## Development
 
 The deployable `lightsail-launch.sh` is **generated** — don't edit it by hand.
-Edit the canonical sources in [`src/`](src/) and rebuild:
+Edit the canonical sources in [`src/`](src/), then rebuild and test:
 
 ```bash
-./build.sh        # assembles src/* into lightsail-launch.sh
+make build        # assemble src/* into lightsail-launch.sh (or: ./build.sh)
+make test         # lint + build-drift + wg-manage + portal tests (tests/run.sh)
 ```
+
+CI runs the same suite on every push. The build is reproducible, so `make test`
+fails if `lightsail-launch.sh` is stale — commit it alongside any `src/` edit.
 
 | Source                         | Installed as                              |
 |--------------------------------|-------------------------------------------|
@@ -251,3 +270,20 @@ Edit the canonical sources in [`src/`](src/) and rebuild:
 `build.sh` base64-embeds each source into the single launch script (so arbitrary
 content survives without quoting issues). The original manual walkthrough this
 project automates is preserved in [`docs/manual-setup.md`](docs/manual-setup.md).
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md): edit `src/`, run `make build` and
+`make test`, and commit the regenerated bundle.
+
+## Security
+
+Keys and passwords are generated on the instance, never stored in this repo. The
+portal is privilege-separated and fronted by nginx (TLS + basic auth). To report
+a vulnerability or read the full security model, see [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © Ali Issa

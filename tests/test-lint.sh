@@ -22,7 +22,7 @@ else echo "  FAIL py_compile src/portal.py"; cat "/tmp/_py.$$"; rc=1; fi
 rm -rf src/__pycache__ "/tmp/_py.$$"
 
 if command -v shellcheck >/dev/null 2>&1; then
-  for f in src/wg-manage src/wg-portal-helper src/wg-nat.sh build.sh bootstrap.sh; do
+  for f in src/wg-manage src/wg-portal-helper src/wg-nat.sh build.sh bootstrap.sh uninstall.sh; do
     [ -f "$f" ] || continue
     if shellcheck -S error -x "$f"; then echo "  ok   shellcheck $f"
     else echo "  FAIL shellcheck $f"; rc=1; fi
