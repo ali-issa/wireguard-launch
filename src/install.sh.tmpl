@@ -124,7 +124,10 @@ if [ "$ENABLE_PORTAL" = true ]; then
   id -u wgportal >/dev/null 2>&1 || \
     useradd --system --home-dir /opt/wg-portal --shell /usr/sbin/nologin wgportal
   install -d -m 755 /opt/wg-portal
-  install -d -m 750 -o root -g wgportal /etc/wg-portal
+  # 0755 so nginx (www-data) can traverse in to read htpasswd; the secret FILES
+  # inside stay 0640 (proxy-token root:wgportal, htpasswd root:www-data), so a
+  # world-searchable directory leaks nothing.
+  install -d -m 755 -o root -g wgportal /etc/wg-portal
   install -d -m 750 /etc/ssl/wg-portal
 
   # The portal user may run ONLY the helper, only as root, without a password.

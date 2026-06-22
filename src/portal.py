@@ -13,10 +13,12 @@ Security model:
   * State-changing requests require a CSRF token and a same-origin check.
 """
 import html
+import http.cookies
 import os
 import re
 import secrets
 import subprocess
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote
@@ -26,6 +28,14 @@ PORT = int(os.environ.get("PORTAL_PORT", "8080"))
 TOKEN_FILE = os.environ.get("PORTAL_TOKEN_FILE", "/etc/wg-portal/proxy-token")
 HELPER = ["sudo", "-n", "/usr/local/sbin/wg-portal-helper"]
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+# CSRF: double-submit cookie. We set a random token in a SameSite cookie and
+# echo the same value into a hidden form field; a POST is accepted only when the
+# two match. This is stateless (survives restarts/redeploys — unlike a single
+# process-global token) and a cross-site attacker can neither read our HTML to
+# learn the field nor get the SameSite cookie sent, so the two can't be matched.
+CSRF_COOKIE = "wgcsrf"
+CSRF_RE = re.compile(r"^[A-Za-z0-9_-]{20,128}$")
 
 
 def _read_token():
@@ -37,7 +47,6 @@ def _read_token():
 
 
 PROXY_TOKEN = _read_token()
-CSRF_TOKEN = secrets.token_urlsafe(32)
 
 
 def helper(verb, name=None, binary=False, timeout=25):
@@ -123,7 +132,7 @@ def layout(title, body):
     )
 
 
-def page_index():
+def page_index(csrf):
     clients = list_clients()
     rows = []
     for c in clients:
@@ -139,7 +148,7 @@ def page_index():
             "<button class='btn danger' type=submit>Revoke</button></form>"
             "</td></tr>"
             % (n, html.escape(c["ip"]), html.escape(c["created"]),
-               html.escape(c["handshake"]), n, n, n, n, CSRF_TOKEN)
+               html.escape(c["handshake"]), n, n, n, n, csrf)
         )
     table = (
         "<table><tr><th>Name</th><th>IP</th><th>Created (UTC)</th>"
@@ -154,7 +163,7 @@ def page_index():
         "pattern='[A-Za-z0-9_-]{1,32}' required autofocus>"
         "<button class='btn primary' type=submit>Create</button></form>"
         "<p class=muted>Letters, numbers, dash, underscore — up to 32 characters.</p></div>"
-        % CSRF_TOKEN
+        % csrf
     )
     return layout(
         "WireGuard Portal",
@@ -162,7 +171,7 @@ def page_index():
     )
 
 
-def page_client(name):
+def page_client(name, csrf):
     by_name = {c["name"]: c for c in list_clients()}
     c = by_name.get(name)
     if c is None:
@@ -183,7 +192,7 @@ def page_client(name):
         "<img class=qr src='/client/%s/qr.png' alt='QR code for %s'>"
         "</div>"
         % (n, html.escape(c["ip"]), html.escape(c["created"]),
-           html.escape(c["handshake"]), n, n, n, CSRF_TOKEN, n, n)
+           html.escape(c["handshake"]), n, n, n, csrf, n, n)
     )
     return layout("WireGuard - " + name, body)
 
@@ -217,7 +226,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # NOT "no-referrer": that makes browsers send "Origin: null" on same-origin
+        # form POSTs, which would break the Origin check below.
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'",
@@ -242,20 +253,44 @@ class Handler(BaseHTTPRequestHandler):
         name = unquote(match.group(1))
         return name if NAME_RE.match(name) else None
 
+    def _csrf_cookie(self):
+        try:
+            jar = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            return None
+        if CSRF_COOKIE in jar and CSRF_RE.match(jar[CSRF_COOKIE].value):
+            return jar[CSRF_COOKIE].value
+        return None
+
+    def _csrf_for_form(self):
+        """Return (token, extra_headers) — reuse the existing cookie, or mint one."""
+        tok = self._csrf_cookie()
+        if tok:
+            return tok, None
+        tok = secrets.token_urlsafe(32)
+        cookie = "%s=%s; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=86400" % (
+            CSRF_COOKIE, tok)
+        return tok, {"Set-Cookie": cookie}
+
     def do_GET(self):
         if not self._guard():
             return
         path = self.path.split("?", 1)[0]
 
         if path == "/":
-            self._send(200, page_index())
+            csrf, extra = self._csrf_for_form()
+            self._send(200, page_index(csrf), extra=extra)
             return
 
         m = re.match(r"^/client/([^/]+)$", path)
         if m:
             name = self._name_from(m)
-            page = page_client(name) if name else None
-            self._send(200, page) if page else self._text(404, "Not found")
+            if not name:
+                self._text(404, "Not found")
+                return
+            csrf, extra = self._csrf_for_form()
+            page = page_client(name, csrf)
+            self._send(200, page, extra=extra) if page else self._text(404, "Not found")
             return
 
         m = re.match(r"^/client/([^/]+)/config$", path)
@@ -297,13 +332,29 @@ class Handler(BaseHTTPRequestHandler):
         return parse_qs(raw)
 
     def _csrf_ok(self, form):
-        token = (form.get("csrf", [""]) or [""])[0]
-        if not secrets.compare_digest(token, CSRF_TOKEN):
+        cookie_tok = self._csrf_cookie()
+        form_tok = (form.get("csrf", [""]) or [""])[0]
+        if not cookie_tok or not form_tok:
+            sys.stderr.write("wg-portal: CSRF reject (cookie=%s form=%s) — cookies "
+                             "may be blocked\n" % (bool(cookie_tok), bool(form_tok)))
+            sys.stderr.flush()
             return False
+        if not secrets.compare_digest(cookie_tok, form_tok):
+            sys.stderr.write("wg-portal: CSRF reject (cookie/field mismatch)\n")
+            sys.stderr.flush()
+            return False
+        # Defense-in-depth same-origin check. The cookie/field match above is the
+        # real CSRF protection (SameSite=Lax keeps the cookie off cross-site POSTs,
+        # and an attacker can't read our HTML for the field), so we only *enforce*
+        # Origin when the browser sends a real one — "null" (privacy modes, some
+        # referrer policies) or absent is accepted rather than breaking the app.
         origin = self.headers.get("Origin")
-        if origin:  # browsers send Origin on form POSTs; enforce same-origin
+        if origin and origin != "null":
             host = self.headers.get("Host", "")
             if not origin.endswith("://" + host):
+                sys.stderr.write("wg-portal: CSRF reject (origin=%r host=%r)\n"
+                                 % (origin, host))
+                sys.stderr.flush()
                 return False
         return True
 
