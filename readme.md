@@ -5,7 +5,9 @@ A turnkey, self-contained **launch script** that turns a fresh Debian box
 client-management CLI and an optional web portal for generating, downloading,
 and revoking client configs (with QR codes).
 
-Paste one file into the Lightsail *Launch script* box and you're done.
+Copy one script to a fresh instance and run it — done. (See the
+[quick start](#quick-start--aws-lightsail); Lightsail's *Launch script* box has a
+16 KB limit, so the full script is copied up and run rather than pasted there.)
 
 ---
 
@@ -36,13 +38,18 @@ Paste one file into the Lightsail *Launch script* box and you're done.
 
 ## Quick start — AWS Lightsail
 
-1. **Create an instance** → *Linux/Unix* → *OS Only* → **Debian** (12+).
-2. Expand **"Launch script"** and paste the entire contents of
-   [`lightsail-launch.sh`](lightsail-launch.sh).
-3. (Recommended) Attach a **static IP** so your endpoint doesn't change on
+> **Heads-up:** Lightsail caps the *Launch script* box at **16 KB**, and
+> `lightsail-launch.sh` is larger — pasting it there fails with
+> *"user data launch script exceeds the 16 KB limit"*. So **don't** paste the
+> full script into that box. Use **Method A** below (copy it up and run it), or
+> **Method B** (paste the tiny `bootstrap.sh` stub instead).
+
+1. **Create an instance** → *Linux/Unix* → *OS Only* → **Debian** (12+). Leave
+   the *Launch script* box empty (unless using Method B).
+2. (Recommended) Attach a **static IP** so your endpoint doesn't change on
    stop/start.
-4. Create the instance, then open ports in the **Lightsail firewall**
-   (Networking tab — this is separate from the instance):
+3. Open ports in the **Lightsail firewall** (Networking tab — this is separate
+   from the instance):
 
    | Protocol | Port  | Why            |
    |----------|-------|----------------|
@@ -50,18 +57,54 @@ Paste one file into the Lightsail *Launch script* box and you're done.
    | TCP      | 443   | Web portal     |
    | TCP      | 22    | SSH (default)  |
 
-5. Wait ~2 minutes for first boot to finish. Then either:
-   - **Web portal**: browse to `https://<your-ip>/` (accept the self-signed
-     cert warning), log in as `admin`. The generated password is in
-     `/root/wg-portal-credentials.txt` on the server (`sudo cat` it over SSH).
-   - **CLI**: SSH in and run `sudo wg-manage add my-phone`.
+### Method A — copy the script up and run it (simplest)
+
+Debian Lightsail's default SSH user is `admin`; the key is the one you download
+from the Lightsail console (*Account → SSH keys*). Run from your machine, in this
+repo's directory:
+
+```bash
+# replace <region> (e.g. eu-west-2) and <INSTANCE_IP> with yours
+scp -i ~/.ssh/LightsailDefaultKey-<region>.pem \
+    lightsail-launch.sh admin@<INSTANCE_IP>:/tmp/
+
+ssh -i ~/.ssh/LightsailDefaultKey-<region>.pem \
+    admin@<INSTANCE_IP> 'sudo bash /tmp/lightsail-launch.sh'
+```
+
+To change defaults, pass them inline (note `sudo VAR=… bash …`):
+
+```bash
+ssh -i ~/.ssh/LightsailDefaultKey-<region>.pem admin@<INSTANCE_IP> \
+    'sudo ENABLE_PORTAL=false WG_LISTEN_PORT=51820 bash /tmp/lightsail-launch.sh'
+```
+
+### Method B — auto-run on first boot (bootstrap stub)
+
+Host `lightsail-launch.sh` somewhere reachable (it contains **no secrets** — keys
+and passwords are generated on the instance), set `SCRIPT_URL` in
+[`bootstrap.sh`](bootstrap.sh), and paste that ~1.6 KB stub into the Lightsail
+*Launch script* box. It downloads and runs the full script on first boot.
+
+### After it finishes (~2 minutes)
+
+- **Web portal**: browse to `https://<INSTANCE_IP>/`, accept the self-signed cert
+  warning, and log in as `admin`. Get the generated password with:
+
+  ```bash
+  ssh -i ~/.ssh/LightsailDefaultKey-<region>.pem admin@<INSTANCE_IP> \
+      'sudo cat /root/wg-portal-credentials.txt'
+  ```
+
+- **CLI**: SSH in and run `sudo wg-manage add my-phone`.
 
 ## Quick start — any existing Debian server
 
+Copy the script to the server and run it as root:
+
 ```bash
 scp lightsail-launch.sh user@server:/tmp/
-ssh user@server
-sudo bash /tmp/lightsail-launch.sh
+ssh user@server 'sudo bash /tmp/lightsail-launch.sh'
 ```
 
 ---
