@@ -18,3 +18,18 @@ jobs:
 
       - name: Run test suite
         run: ./tests/run.sh
+
+  opentofu:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: opentofu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+      - name: Format check
+        run: tofu fmt -check -recursive
+      - name: Validate
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate

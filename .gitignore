@@ -16,3 +16,12 @@ __pycache__/
 
 # Claude Code harness / session artifacts
 .claude/
+
+# OpenTofu / Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log

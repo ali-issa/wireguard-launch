@@ -101,6 +101,22 @@ and passwords are generated on the instance), set `SCRIPT_URL` in
 
 - **CLI**: SSH in and run `sudo wg-manage add my-phone`.
 
+## Provision everything with OpenTofu (optional)
+
+Prefer infrastructure-as-code? The [`opentofu/`](opentofu/) module creates the
+Lightsail instance, a **static IP**, and the **firewall ports** (the manual
+console step), booting `bootstrap.sh` as user-data:
+
+```bash
+cd opentofu
+cp terraform.tfvars.example terraform.tfvars   # set region, SSH key, allowed IPs
+tofu init && tofu apply
+```
+
+It runs on your machine (no extra load on the 512 MB box). See
+[`opentofu/README.md`](opentofu/README.md) for inputs and how to adopt an
+existing instance via `tofu import`.
+
 ## Quick start — any existing Debian server
 
 Copy the script to the server and run it as root:

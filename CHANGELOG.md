@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- OpenTofu module (`opentofu/`) that provisions the Lightsail instance, a static
+  IP, and the firewall ports declaratively, booting `bootstrap.sh` as user-data.
+  CI now also formats and validates the module.
+
 ## [0.1.0] - 2026-06-22
 
 ### Added

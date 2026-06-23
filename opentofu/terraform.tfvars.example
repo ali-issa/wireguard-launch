@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and edit. All values are optional (sensible defaults).
+
+region = "eu-west-2"
+name   = "wireguard"
+
+# Bring your own SSH key (recommended) so you can log in to manage clients:
+# ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+
+# Lock SSH (and optionally the portal) to your own IP. Find it: curl ifconfig.me
+# ssh_allowed_cidrs    = ["203.0.113.7/32"]
+# portal_allowed_cidrs = ["203.0.113.7/32"]
+
+# Match WG_LISTEN_PORT if you changed it in the launch script:
+# wg_port = 51820
+
+# CLI-only (no web portal): also set ENABLE_PORTAL=false in bootstrap.sh.
+# enable_portal_port = false
